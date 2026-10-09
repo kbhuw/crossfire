@@ -22,8 +22,8 @@ transcript and calls the winner.
 ## run it
 
 ```sh
-pip install -e .          # or: pip install fastapi 'uvicorn[standard]' httpx python-dotenv
-cp .env.example .env      # set AI_GATEWAY_API_KEY
+pip install -e .          # or: pip install fastapi 'uvicorn[standard]' httpx 'pyjwt[crypto]' python-dotenv
+cp .env.example .env      # set AI_GATEWAY_API_KEY and CLERK_PUBLISHABLE_KEY
 uvicorn main:app --port 3123
 ```
 
@@ -36,3 +36,11 @@ Open http://localhost:3123.
 
 The judge is `openai/gpt-5-mini` through the Vercel AI Gateway
 (`JUDGE_MODEL` to override). Rooms live in memory and expire after 6 hours.
+
+## auth
+
+Sign-in is Clerk. Set `CLERK_PUBLISHABLE_KEY` to a Clerk app's publishable key
+(`pk_live_...` / `pk_test_...`) and every API route requires a session JWT -
+the client mounts Clerk's sign-in wall before anything else. The server only
+needs the publishable key: it derives the Frontend API host from it and
+verifies tokens against Clerk's JWKS. Leave it unset for open local dev.

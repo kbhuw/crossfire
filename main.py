@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import secrets
@@ -7,12 +8,50 @@ import time
 import uuid
 
 import httpx
+import jwt as pyjwt
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
+
+# ---------- auth ----------
+
+CLERK_PK = os.environ.get("CLERK_PUBLISHABLE_KEY", "")
+_jwks_client = None
+_clerk_iss = None
+if CLERK_PK:
+    try:
+        _host = base64.b64decode(CLERK_PK.split("_", 2)[2].rstrip("$") + "==").decode().rstrip("$")
+        _clerk_iss = f"https://{_host}"
+        _jwks_client = pyjwt.PyJWKClient(f"{_clerk_iss}/.well-known/jwks.json")
+    except Exception as e:
+        print("bad CLERK_PUBLISHABLE_KEY, auth disabled:", e)
+        CLERK_PK = ""
+
+
+def _verify_token(token: str) -> str | None:
+    try:
+        key = _jwks_client.get_signing_key_from_jwt(token).key
+        claims = pyjwt.decode(token, key, algorithms=["RS256"], issuer=_clerk_iss, options={"verify_aud": False})
+        return claims.get("sub")
+    except Exception:
+        return None
+
+
+async def require_user(req: Request) -> str | None:
+    if not CLERK_PK:
+        return None
+    auth = req.headers.get("authorization") or ""
+    token = auth[7:] if auth.startswith("Bearer ") else (req.query_params.get("token") or "")
+    if not token:
+        raise HTTPException(401, "sign in required")
+    sub = await asyncio.to_thread(_verify_token, token)
+    if not sub:
+        raise HTTPException(401, "bad token")
+    return sub
+
 
 GATEWAY = "https://ai-gateway.vercel.sh/v1/chat/completions"
 MODEL = os.environ.get("JUDGE_MODEL", "openai/gpt-5-mini")
@@ -289,14 +328,20 @@ async def adjudicate(room: dict, item: dict, player: dict, text: str):
 # ---------- routes ----------
 
 
+@app.get("/api/config")
+async def config():
+    return {"clerkPk": CLERK_PK, "clerkFapi": _clerk_iss}
+
+
 @app.post("/api/rooms")
 async def create_room(req: Request):
+    sub = await require_user(req)
     body = await req.json()
     name = (body.get("name") or "").strip()[:24]
     if not name:
         return JSONResponse({"error": "name required"}, 400)
     code = new_code()
-    host = {"id": uuid.uuid4().hex, "name": name, "role": "debater", "hearts": HEARTS_MAX, "joinedAt": int(time.time() * 1000)}
+    host = {"id": uuid.uuid4().hex, "sub": sub, "name": name, "role": "debater", "hearts": HEARTS_MAX, "joinedAt": int(time.time() * 1000)}
     room = {
         "code": code,
         "createdAt": int(time.time() * 1000),
@@ -318,15 +363,20 @@ async def create_room(req: Request):
 
 @app.post("/api/rooms/{code}/join")
 async def join_room(code: str, req: Request):
+    sub = await require_user(req)
     room = get_room(code)
     if not room:
         return JSONResponse({"error": "room not found"}, 404)
     if room["status"] == "over":
         return JSONResponse({"error": "game over - start a new room"}, 400)
+    if sub:
+        existing = next((p for p in room["players"] if p.get("sub") == sub), None)
+        if existing:
+            return {"playerId": existing["id"], "role": existing["role"]}
     body = await req.json()
     name = (body.get("name") or "").strip()[:24] or "anon"
     role = "debater" if len(debaters(room)) < 2 else "spectator"
-    player = {"id": uuid.uuid4().hex, "name": name, "role": role, "hearts": HEARTS_MAX, "joinedAt": int(time.time() * 1000)}
+    player = {"id": uuid.uuid4().hex, "sub": sub, "name": name, "role": role, "hearts": HEARTS_MAX, "joinedAt": int(time.time() * 1000)}
     room["players"].append(player)
     sys_msg(room, f"{name} joined as {role}")
     broadcast(room)
@@ -334,7 +384,8 @@ async def join_room(code: str, req: Request):
 
 
 @app.get("/api/rooms/{code}")
-async def room_state(code: str):
+async def room_state(code: str, req: Request):
+    await require_user(req)
     room = get_room(code)
     if not room:
         return JSONResponse({"error": "room not found"}, 404)
@@ -342,7 +393,8 @@ async def room_state(code: str):
 
 
 @app.get("/api/rooms/{code}/events")
-async def room_events(code: str):
+async def room_events(code: str, req: Request):
+    await require_user(req)
     room = get_room(code)
     if not room:
         return JSONResponse({"error": "room not found"}, 404)
@@ -366,6 +418,7 @@ async def room_events(code: str):
 
 @app.post("/api/rooms/{code}/topic")
 async def set_topic(code: str, req: Request):
+    await require_user(req)
     room = get_room(code)
     if not room:
         return JSONResponse({"error": "room not found"}, 404)
@@ -392,6 +445,7 @@ async def set_topic(code: str, req: Request):
 
 @app.post("/api/rooms/{code}/start")
 async def start_debate(code: str, req: Request):
+    await require_user(req)
     room = get_room(code)
     if not room:
         return JSONResponse({"error": "room not found"}, 404)
@@ -414,6 +468,7 @@ async def start_debate(code: str, req: Request):
 
 @app.post("/api/rooms/{code}/message")
 async def post_message(code: str, req: Request):
+    await require_user(req)
     room = get_room(code)
     if not room:
         return JSONResponse({"error": "room not found"}, 404)
@@ -437,6 +492,7 @@ async def post_message(code: str, req: Request):
 
 @app.post("/api/rooms/{code}/end")
 async def end_debate(code: str, req: Request):
+    await require_user(req)
     room = get_room(code)
     if not room:
         return JSONResponse({"error": "room not found"}, 404)
@@ -455,6 +511,7 @@ async def end_debate(code: str, req: Request):
 
 @app.post("/api/rooms/{code}/rematch")
 async def rematch(code: str, req: Request):
+    await require_user(req)
     room = get_room(code)
     if not room:
         return JSONResponse({"error": "room not found"}, 404)

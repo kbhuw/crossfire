@@ -6,6 +6,68 @@ const HEART_SVG = (filled) =>
 
 const DOTS = `<span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>`;
 
+/* ---------------- auth ---------------- */
+
+let clerkPk = null;
+
+const tok = async () => (window.Clerk && window.Clerk.session ? window.Clerk.session.getToken() : null);
+
+async function apiFetch(url, opts = {}) {
+  const t = await tok();
+  opts.headers = Object.assign({}, opts.headers, t ? { authorization: `Bearer ${t}` } : {});
+  return fetch(url, opts);
+}
+
+function displayName() {
+  const u = window.Clerk && window.Clerk.user;
+  if (!u) return "";
+  return (u.username || u.fullName || `${u.firstName || ""} ${u.lastName || ""}`.trim()).trim();
+}
+
+function renderSignIn() {
+  $app.innerHTML = `
+  <div class="center-screen">
+    <div class="home-title">
+      <div class="over">AI REFEREE PRESENTS</div>
+      <h1>CROSS<span>FIRE</span></h1>
+      <p class="muted small" style="margin-top:16px">sign in to step into the ring</p>
+    </div>
+    <div class="card" style="max-width:430px;width:100%;display:flex;justify-content:center;padding:8px">
+      <div id="clerk-signin"></div>
+    </div>
+  </div>`;
+  window.Clerk.mountSignIn(document.getElementById("clerk-signin"), { routing: "virtual" });
+}
+
+async function ensureAuth() {
+  const cfg = await fetch("/api/config").then((r) => r.json()).catch(() => ({}));
+  clerkPk = cfg.clerkPk || null;
+  if (!clerkPk) return;
+  await new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = `${cfg.clerkFapi}/npm/@clerk/clerk-js@5/dist/clerk.browser.js`;
+    s.async = true;
+    s.crossOrigin = "anonymous";
+    s.setAttribute("data-clerk-publishable-key", clerkPk);
+    s.onload = res;
+    s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  if (!window.Clerk) throw new Error("clerk script did not initialize");
+  await window.Clerk.load({ publishableKey: clerkPk });
+  if (!window.Clerk.session) {
+    renderSignIn();
+    await new Promise((res) => {
+      const iv = setInterval(() => {
+        if (window.Clerk.session) {
+          clearInterval(iv);
+          res();
+        }
+      }, 400);
+    });
+  }
+}
+
 /* ---------------- home ---------------- */
 
 function renderHome() {
@@ -31,7 +93,13 @@ function renderHome() {
       <p class="err" id="err"></p>
     </div>
     <p class="muted tiny" style="margin-top:24px">share the room link — friends can debate or just watch</p>
+    ${clerkPk ? `<button class="link-btn" id="signout" style="margin-top:12px">signed in as ${esc(displayName())} · sign out</button>` : ""}
   </div>`;
+
+  const nameEl = document.getElementById("name");
+  if (!nameEl.value && displayName()) nameEl.value = displayName().slice(0, 24);
+  const signout = document.getElementById("signout");
+  if (signout) signout.onclick = () => window.Clerk.signOut().then(() => location.reload());
 
   document.getElementById("create").onclick = async (e) => {
     const name = document.getElementById("name").value.trim();
@@ -39,7 +107,7 @@ function renderHome() {
     if (!name) return (err.textContent = "enter your name first");
     e.target.disabled = true;
     e.target.textContent = "building the ring…";
-    const res = await fetch("/api/rooms", {
+    const res = await apiFetch("/api/rooms", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name }),
@@ -207,7 +275,7 @@ function renderRoom() {
 
   const err = (m) => (document.getElementById("err").textContent = m);
   const api = async (path, body = {}) => {
-    const res = await fetch(`/api/rooms/${room.code}/${path}`, {
+    const res = await apiFetch(`/api/rooms/${room.code}/${path}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ playerId: pid, ...body }),
@@ -302,7 +370,7 @@ function renderJoin(code) {
     const name = document.getElementById("jname").value.trim();
     const err = document.getElementById("err");
     if (!name) return (err.textContent = "enter your name");
-    const res = await fetch(`/api/rooms/${code}/join`, {
+    const res = await apiFetch(`/api/rooms/${code}/join`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name }),
@@ -317,7 +385,9 @@ function renderJoin(code) {
   };
   document.getElementById("joinBtn").onclick = doJoin;
   document.getElementById("jname").onkeydown = (e) => e.key === "Enter" && doJoin();
-  document.getElementById("jname").focus();
+  const jnameEl = document.getElementById("jname");
+  if (!jnameEl.value && displayName()) jnameEl.value = displayName().slice(0, 24);
+  jnameEl.focus();
 }
 
 function renderNotFound() {
@@ -329,12 +399,36 @@ function renderNotFound() {
   </div>`;
 }
 
+async function openStream(code) {
+  if (es) es.close();
+  const t = await tok();
+  es = new EventSource(`/api/rooms/${code}/events${t ? `?token=${encodeURIComponent(t)}` : ""}`);
+  es.onmessage = (e) => {
+    try {
+      room = JSON.parse(e.data);
+      if (pid) renderRoom();
+      else renderJoin(code);
+    } catch {}
+  };
+  es.onerror = async () => {
+    es.close();
+    try {
+      const r = await apiFetch(`/api/rooms/${code}`);
+      if (!r.ok) return renderNotFound();
+      room = (await r.json()).room;
+      if (pid) renderRoom();
+      else renderJoin(code);
+      setTimeout(() => openStream(code), 1000);
+    } catch {}
+  };
+}
+
 async function initRoom(code) {
   pid = localStorage.getItem(`crossfire:${code}:pid`);
 
   // initial snapshot decides join vs room view
   try {
-    const res = await fetch(`/api/rooms/${code}`);
+    const res = await apiFetch(`/api/rooms/${code}`);
     if (!res.ok) return renderNotFound();
     room = (await res.json()).room;
   } catch {
@@ -347,29 +441,26 @@ async function initRoom(code) {
     renderRoom();
   }
 
-  if (es) es.close();
-  es = new EventSource(`/api/rooms/${code}/events`);
-  es.onmessage = (e) => {
-    try {
-      room = JSON.parse(e.data);
-      if (pid) renderRoom();
-      else renderJoin(code);
-    } catch {}
-  };
-  es.onerror = () => {
-    // EventSource auto-reconnects; if the room vanished, show not found on next fetch
-    fetch(`/api/rooms/${code}`).then((r) => {
-      if (!r.ok) {
-        es.close();
-        renderNotFound();
-      }
-    });
-  };
+  openStream(code);
 }
 
 /* ---------------- boot ---------------- */
 
-const path = location.pathname;
-const m = path.match(/^\/room\/([A-Z0-9]{4,8})\/?$/i);
-if (m) initRoom(m[1].toUpperCase());
-else renderHome();
+(async () => {
+  try {
+    await ensureAuth();
+  } catch (e) {
+    console.error("auth failed", e);
+    $app.innerHTML = `
+    <div class="center-screen">
+      <p class="display" style="font-size:24px;font-weight:900">SIGN-IN UNAVAILABLE</p>
+      <p class="muted small" style="margin:8px 0 20px">couldn't load the login widget — refresh to try again</p>
+      <button class="btn btn-ghost" onclick="location.reload()">refresh</button>
+    </div>`;
+    return;
+  }
+  const path = location.pathname;
+  const m = path.match(/^\/room\/([A-Z0-9]{4,8})\/?$/i);
+  if (m) initRoom(m[1].toUpperCase());
+  else renderHome();
+})();
