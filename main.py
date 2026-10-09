@@ -212,7 +212,8 @@ Rules:
 
 Reply ONLY as JSON: {{"verdict":"...","fallacy":"... or null","note":"..."}}'''
     recent = transcript(room, 10)
-    user = f'{"Recent exchange:\n" + recent + "\n\n" if recent else ""}New message by {player["name"]}:\n"{text}"'
+    lead = "Recent exchange:\n" + recent + "\n\n" if recent else ""
+    user = f'{lead}New message by {player["name"]}:\n"{text}"'
     parsed = parse_json(await call_judge(system, user))
     verdict = parsed.get("verdict", "solid")
     if verdict not in VALID:
