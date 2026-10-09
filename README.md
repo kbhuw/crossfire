@@ -22,8 +22,9 @@ transcript and calls the winner.
 ## run it
 
 ```sh
-pip install -e .          # or: pip install fastapi 'uvicorn[standard]' httpx 'pyjwt[crypto]' python-dotenv
-cp .env.example .env      # set AI_GATEWAY_API_KEY and CLERK_PUBLISHABLE_KEY
+pip install -e .          # or: pip install fastapi 'uvicorn[standard]' httpx python-dotenv
+cd auth && npm ci           # the Better Auth service (needs node 20+)
+cp .env.example .env      # set AI_GATEWAY_API_KEY and BETTER_AUTH_SECRET
 uvicorn main:app --port 3123
 ```
 
@@ -39,8 +40,8 @@ The judge is `openai/gpt-5-mini` through the Vercel AI Gateway
 
 ## auth
 
-Sign-in is Clerk. Set `CLERK_PUBLISHABLE_KEY` to a Clerk app's publishable key
-(`pk_live_...` / `pk_test_...`) and every API route requires a session JWT -
-the client mounts Clerk's sign-in wall before anything else. The server only
-needs the publishable key: it derives the Frontend API host from it and
-verifies tokens against Clerk's JWKS. Leave it unset for open local dev.
+Sign-in is [Better Auth](https://better-auth.com), email + password, sessions
+in a local SQLite file (`auth/auth.db`). The Node service (`auth/server.mjs`)
+runs beside the app on `127.0.0.1:3922`; FastAPI proxies `/api/auth/*` to it
+and checks the session cookie on every API route. `uvicorn` spawns it
+automatically at startup. Set `REQUIRE_AUTH=0` to skip it for open local dev.

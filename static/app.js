@@ -8,63 +8,73 @@ const DOTS = `<span class="dot">.</span><span class="dot">.</span><span class="d
 
 /* ---------------- auth ---------------- */
 
-let clerkPk = null;
+let authRequired = true;
+let meUser = null;
 
-const tok = async () => (window.Clerk && window.Clerk.session ? window.Clerk.session.getToken() : null);
-
-async function apiFetch(url, opts = {}) {
-  const t = await tok();
-  opts.headers = Object.assign({}, opts.headers, t ? { authorization: `Bearer ${t}` } : {});
-  return fetch(url, opts);
-}
+const apiFetch = (url, opts = {}) => fetch(url, opts);
 
 function displayName() {
-  const u = window.Clerk && window.Clerk.user;
-  if (!u) return "";
-  return (u.username || u.fullName || `${u.firstName || ""} ${u.lastName || ""}`.trim()).trim();
+  if (!meUser) return "";
+  return (meUser.name || (meUser.email || "").split("@")[0]).trim();
 }
 
-function renderSignIn() {
+function renderAuth(mode) {
+  const isUp = mode === "up";
   $app.innerHTML = `
   <div class="center-screen">
     <div class="home-title">
       <div class="over">AI REFEREE PRESENTS</div>
       <h1>CROSS<span>FIRE</span></h1>
-      <p class="muted small" style="margin-top:16px">sign in to step into the ring</p>
+      <p class="muted small" style="margin-top:16px">${isUp ? "make an account to step into the ring" : "sign in to step into the ring"}</p>
     </div>
-    <div class="card" style="max-width:430px;width:100%;display:flex;justify-content:center;padding:8px">
-      <div id="clerk-signin"></div>
+    <div class="card home-card">
+      ${isUp ? `<input type="text" id="aname" placeholder="your name" maxlength="24" />` : ""}
+      <input type="text" id="aemail" placeholder="email" maxlength="80" autocomplete="email" />
+      <input type="password" id="apass" placeholder="password" maxlength="80" autocomplete="${isUp ? "new-password" : "current-password"}" />
+      <button class="btn btn-gold w-full" id="go">${isUp ? "SIGN UP" : "SIGN IN"}</button>
+      <button class="link-btn" id="swap" style="align-self:center">${isUp ? "have an account? sign in" : "new here? sign up"}</button>
+      <p class="err" id="err"></p>
     </div>
   </div>`;
-  window.Clerk.mountSignIn(document.getElementById("clerk-signin"), { routing: "virtual" });
+  document.getElementById("swap").onclick = () => renderAuth(isUp ? "in" : "up");
+  const doIt = async () => {
+    const email = document.getElementById("aemail").value.trim();
+    const password = document.getElementById("apass").value;
+    const err = document.getElementById("err");
+    if (!email || !password) return (err.textContent = "email + password required");
+    const btn = document.getElementById("go");
+    btn.disabled = true;
+    const body = { email, password };
+    if (isUp) body.name = document.getElementById("aname").value.trim() || email.split("@")[0];
+    const res = await fetch(`/api/auth/sign-${isUp ? "up" : "in"}/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      btn.disabled = false;
+      const d = await res.json().catch(() => ({}));
+      return (err.textContent = d.message || "no luck — check your details");
+    }
+    location.reload();
+  };
+  document.getElementById("go").onclick = doIt;
+  document.getElementById("apass").onkeydown = (e) => e.key === "Enter" && doIt();
 }
 
 async function ensureAuth() {
   const cfg = await fetch("/api/config").then((r) => r.json()).catch(() => ({}));
-  clerkPk = cfg.clerkPk || null;
-  if (!clerkPk) return;
-  await new Promise((res, rej) => {
-    const s = document.createElement("script");
-    s.src = `${cfg.clerkFapi}/npm/@clerk/clerk-js@5/dist/clerk.browser.js`;
-    s.async = true;
-    s.crossOrigin = "anonymous";
-    s.setAttribute("data-clerk-publishable-key", clerkPk);
-    s.onload = res;
-    s.onerror = rej;
-    document.head.appendChild(s);
-  });
-  if (!window.Clerk) throw new Error("clerk script did not initialize");
-  await window.Clerk.load({ publishableKey: clerkPk });
-  if (!window.Clerk.session) {
-    renderSignIn();
-    await new Promise((res) => {
-      const iv = setInterval(() => {
-        if (window.Clerk.session) {
-          clearInterval(iv);
-          res();
-        }
-      }, 400);
-    });
+  authRequired = cfg.authRequired !== false;
+  if (!authRequired) return;
+  meUser = await fetch("/api/auth/get-session")
+    .then(async (r) => {
+      const d = await r.json().catch(() => null);
+      return d && d.user ? d.user : null;
+    })
+    .catch(() => null);
+  if (!meUser) {
+    renderAuth("in");
+    await new Promise(() => {}); // page reloads on successful sign-in
   }
 }
 
@@ -93,13 +103,13 @@ function renderHome() {
       <p class="err" id="err"></p>
     </div>
     <p class="muted tiny" style="margin-top:24px">share the room link — friends can debate or just watch</p>
-    ${clerkPk ? `<button class="link-btn" id="signout" style="margin-top:12px">signed in as ${esc(displayName())} · sign out</button>` : ""}
+    ${authRequired && meUser ? `<button class="link-btn" id="signout" style="margin-top:12px">signed in as ${esc(displayName())} · sign out</button>` : ""}
   </div>`;
 
   const nameEl = document.getElementById("name");
   if (!nameEl.value && displayName()) nameEl.value = displayName().slice(0, 24);
   const signout = document.getElementById("signout");
-  if (signout) signout.onclick = () => window.Clerk.signOut().then(() => location.reload());
+  if (signout) signout.onclick = () => fetch("/api/auth/sign-out", { method: "POST" }).then(() => location.reload());
 
   document.getElementById("create").onclick = async (e) => {
     const name = document.getElementById("name").value.trim();
@@ -401,8 +411,7 @@ function renderNotFound() {
 
 async function openStream(code) {
   if (es) es.close();
-  const t = await tok();
-  es = new EventSource(`/api/rooms/${code}/events${t ? `?token=${encodeURIComponent(t)}` : ""}`);
+  es = new EventSource(`/api/rooms/${code}/events`);
   es.onmessage = (e) => {
     try {
       room = JSON.parse(e.data);

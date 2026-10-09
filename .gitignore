@@ -1,6 +1,9 @@
 .env
 __pycache__/
 *.pyc
-node_modules
+node_modules/
 .next
 .DS_Store
+auth/auth.db
+auth/auth.db-journal
+auth/auth.log

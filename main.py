@@ -1,16 +1,15 @@
 import asyncio
-import base64
 import json
 import os
 import secrets
 import string
+import subprocess
 import time
 import uuid
 
 import httpx
-import jwt as pyjwt
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -18,39 +17,26 @@ load_dotenv()
 
 # ---------- auth ----------
 
-CLERK_PK = os.environ.get("CLERK_PUBLISHABLE_KEY", "")
-_jwks_client = None
-_clerk_iss = None
-if CLERK_PK:
-    try:
-        _host = base64.b64decode(CLERK_PK.split("_", 2)[2].rstrip("$") + "==").decode().rstrip("$")
-        _clerk_iss = f"https://{_host}"
-        _jwks_client = pyjwt.PyJWKClient(f"{_clerk_iss}/.well-known/jwks.json")
-    except Exception as e:
-        print("bad CLERK_PUBLISHABLE_KEY, auth disabled:", e)
-        CLERK_PK = ""
-
-
-def _verify_token(token: str) -> str | None:
-    try:
-        key = _jwks_client.get_signing_key_from_jwt(token).key
-        claims = pyjwt.decode(token, key, algorithms=["RS256"], issuer=_clerk_iss, options={"verify_aud": False})
-        return claims.get("sub")
-    except Exception:
-        return None
+AUTH_REQUIRED = os.environ.get("REQUIRE_AUTH", "1") != "0"
+AUTH_INTERNAL = os.environ.get("AUTH_INTERNAL_URL", "http://127.0.0.1:3922")
 
 
 async def require_user(req: Request) -> str | None:
-    if not CLERK_PK:
+    if not AUTH_REQUIRED:
         return None
-    auth = req.headers.get("authorization") or ""
-    token = auth[7:] if auth.startswith("Bearer ") else (req.query_params.get("token") or "")
-    if not token:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{AUTH_INTERNAL}/api/auth/get-session",
+                headers={"cookie": req.headers.get("cookie", "")},
+            )
+        data = r.json() if r.status_code == 200 else None
+    except Exception:
+        raise HTTPException(503, "auth service unavailable")
+    user = (data or {}).get("user") if isinstance(data, dict) else None
+    if not user:
         raise HTTPException(401, "sign in required")
-    sub = await asyncio.to_thread(_verify_token, token)
-    if not sub:
-        raise HTTPException(401, "bad token")
-    return sub
+    return user["id"]
 
 
 GATEWAY = "https://ai-gateway.vercel.sh/v1/chat/completions"
@@ -61,6 +47,33 @@ FEED_LIMIT = 300
 ROOM_TTL = 6 * 3600
 
 app = FastAPI()
+
+
+@app.api_route("/api/auth/{path:path}", methods=["GET", "POST", "OPTIONS"])
+async def auth_proxy(path: str, req: Request):
+    body = await req.body()
+    headers = {k: v for k, v in req.headers.items() if k.lower() not in ("host", "content-length")}
+    headers["origin"] = AUTH_INTERNAL
+    headers["referer"] = AUTH_INTERNAL + "/"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.request(
+                req.method,
+                f"{AUTH_INTERNAL}/api/auth/{path}",
+                params=req.query_params,
+                content=body,
+                headers=headers,
+            )
+    except Exception:
+        raise HTTPException(503, "auth service unavailable")
+    resp = Response(status_code=r.status_code, content=r.content)
+    resp.raw_headers = [
+        (k.lower().encode("latin-1"), v.encode("latin-1"))
+        for k, v in r.headers.multi_items()
+        if k.lower() not in ("connection", "content-length", "transfer-encoding")
+    ]
+    return resp
+
 
 rooms: dict[str, dict] = {}
 listeners: dict[str, list[asyncio.Queue]] = {}
@@ -330,7 +343,7 @@ async def adjudicate(room: dict, item: dict, player: dict, text: str):
 
 @app.get("/api/config")
 async def config():
-    return {"clerkPk": CLERK_PK, "clerkFapi": _clerk_iss}
+    return {"authRequired": AUTH_REQUIRED}
 
 
 @app.post("/api/rooms")
@@ -564,3 +577,17 @@ async def sweeper():
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(sweeper())
+    if AUTH_REQUIRED:
+        auth_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "auth")
+        env = dict(os.environ)
+        try:
+            subprocess.Popen(
+                ["node", "server.mjs"],
+                cwd=auth_dir,
+                env=env,
+                stdout=open(os.path.join(auth_dir, "auth.log"), "ab"),
+                stderr=subprocess.STDOUT,
+            )
+            print("auth service starting on :3922")
+        except FileNotFoundError:
+            print("WARNING: node not found - auth service cannot start")
