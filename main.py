@@ -52,7 +52,13 @@ app = FastAPI()
 @app.api_route("/api/auth/{path:path}", methods=["GET", "POST", "OPTIONS"])
 async def auth_proxy(path: str, req: Request):
     body = await req.body()
-    headers = {k: v for k, v in req.headers.items() if k.lower() not in ("host", "content-length")}
+    headers = {
+        k: v for k, v in req.headers.items()
+        if k.lower() not in ("host", "content-length")
+        and not k.lower().startswith("x-forwarded")
+        and not k.lower().startswith("fly-")
+        and k.lower() != "forwarded"
+    }
     headers["origin"] = AUTH_INTERNAL
     headers["referer"] = AUTH_INTERNAL + "/"
     try:
