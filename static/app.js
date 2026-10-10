@@ -30,16 +30,14 @@ function renderAuth(mode) {
     <div class="card home-card">
       ${isUp ? `<input type="text" id="aname" placeholder="your name" maxlength="24" />` : ""}
       <input type="text" id="aemail" placeholder="email" maxlength="80" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
-      <input type="password" id="apass" placeholder="password" maxlength="80" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
+      <input type="text" id="apass" placeholder="password" maxlength="80" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" style="-webkit-text-security:disc" />
       <button class="btn btn-gold w-full" id="go">${isUp ? "SIGN UP" : "SIGN IN"}</button>
       <button class="link-btn" id="swap" style="align-self:center">${isUp ? "have an account? sign in" : "new here? sign up"}</button>
       <p class="err" id="err"></p>
     </div>
   </div>`;
-  const apass = document.getElementById("apass");
-  if (window.CSS && CSS.supports("-webkit-text-security: disc")) {
-    apass.type = "text";
-    apass.style.webkitTextSecurity = "disc";
+  if (!(window.CSS && CSS.supports("-webkit-text-security: disc"))) {
+    document.getElementById("apass").type = "password";
   }
   document.getElementById("swap").onclick = () => renderAuth(isUp ? "in" : "up");
   const doIt = async () => {
