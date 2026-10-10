@@ -30,15 +30,12 @@ function renderAuth(mode) {
     <div class="card home-card">
       ${isUp ? `<input type="text" id="aname" placeholder="your name" maxlength="24" />` : ""}
       <input type="text" id="aemail" placeholder="email" maxlength="80" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
-      <input type="text" id="apass" placeholder="password" maxlength="80" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" style="-webkit-text-security:disc" />
+      <input type="password" id="apass" placeholder="password" maxlength="80" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
       <button class="btn btn-gold w-full" id="go">${isUp ? "SIGN UP" : "SIGN IN"}</button>
       <button class="link-btn" id="swap" style="align-self:center">${isUp ? "have an account? sign in" : "new here? sign up"}</button>
       <p class="err" id="err"></p>
     </div>
   </div>`;
-  if (!(window.CSS && CSS.supports("-webkit-text-security: disc"))) {
-    document.getElementById("apass").type = "password";
-  }
   document.getElementById("swap").onclick = () => renderAuth(isUp ? "in" : "up");
   const doIt = async () => {
     const email = document.getElementById("aemail").value.trim();
@@ -62,7 +59,7 @@ function renderAuth(mode) {
     location.reload();
   };
   document.getElementById("go").onclick = doIt;
-  document.getElementById("apass").onkeydown = (e) => e.key === "Enter" && doIt();
+  document.getElementById("apass").onkeydown = (e) => { if (e.key === "Enter") doIt(); };
 }
 
 async function ensureAuth() {
@@ -321,7 +318,7 @@ function renderRoom() {
       });
     };
     send.onclick = doSend;
-    draft.onkeydown = (e) => e.key === "Enter" && doSend();
+    draft.onkeydown = (e) => { if (e.key === "Enter") doSend(); };
     draft.focus();
   }
   const callBtn = document.getElementById("callJudge");
@@ -397,7 +394,7 @@ function renderJoin(code) {
     renderRoom();
   };
   document.getElementById("joinBtn").onclick = doJoin;
-  document.getElementById("jname").onkeydown = (e) => e.key === "Enter" && doJoin();
+  document.getElementById("jname").onkeydown = (e) => { if (e.key === "Enter") doJoin(); };
   const jnameEl = document.getElementById("jname");
   if (!jnameEl.value && displayName()) jnameEl.value = displayName().slice(0, 24);
   jnameEl.focus();
